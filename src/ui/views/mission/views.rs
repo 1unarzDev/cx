@@ -1,6 +1,6 @@
 //! Screens: hub, device, session peek, files, preview, palette, keys, onboarding, join,
 //! link policy and help. Each is a plain function over the shared `Cx`.
-use super::{fit, fmt, inset, nebula, orbit, tiles, Cx, Size, SLOTS};
+use super::{fit, fmt, inset, nebula, orbit, tiles, Cx, Size};
 use crate::ui::views::{
     caps::Pane, Access, DeviceStatus, EdgeKind, FileKind, LabDevice, LabEdge, LabSession, LabView,
     PreviewKind, Tok,
@@ -43,7 +43,7 @@ pub(super) fn draw(cx: &Cx, view: &LabView, buf: &mut Buffer) {
             // (The first slot alone on phones, so the chip reads the same at every size.)
             let k = if cx.touch() { 1 } else { n.clamp(1, 3) };
             let slots: String = std::iter::once(cx.ret().to_string())
-                .chain(SLOTS[..k].iter().map(|c| c.to_string()))
+                .chain(cx.slots().iter().take(k).map(|c| c.to_string()))
                 .collect::<Vec<_>>()
                 .join(" ");
             let mut items: Keys = Vec::new();
@@ -69,7 +69,7 @@ pub(super) fn draw(cx: &Cx, view: &LabView, buf: &mut Buffer) {
                     items.push((slots.as_str(), "attach", "attach"));
                 }
                 if retry {
-                    items.push(("r", "retry", "retry"));
+                    items.push(("R", "retry", "retry"));
                 }
                 if !home {
                     items.push(("esc", "back", "back"));
@@ -91,7 +91,7 @@ pub(super) fn draw(cx: &Cx, view: &LabView, buf: &mut Buffer) {
                     }
                 }
                 if retry {
-                    items.push(("r", "retry", "retry"));
+                    items.push(("R", "retry", "retry"));
                 }
                 items.extend(reach.iter().copied());
                 if n > 0 {
@@ -125,7 +125,7 @@ pub(super) fn draw(cx: &Cx, view: &LabView, buf: &mut Buffer) {
             let arrows = cx.g("←↑↓→", "hjkl");
             if cx.c.focus == Some(Pane::Graph) {
                 items = vec![
-                    (cx.ret(), "link", "attach"),
+                    (cx.ret(), "open", "attach"),
                     (arrows, "move", ""),
                     ("tab", "sessions", ""),
                     ("esc", "back", "back"),
@@ -783,17 +783,15 @@ fn device(cx: &Cx, buf: &mut Buffer, r: Rect, d: &LabDevice) {
             zone(cx, buf, main.x, fy, right, "LINKS", true);
         }
         cx.hit(Rect::new(main.x, fy, 12, 1), "links");
-        // The hub's map seen from this device, in the rows left under its rule: each
-        // link's numbers are one `e` away (the edge editor). (A picture, not options:
-        // its device letters mean slots here, so it leaves no tap targets.)
+        // The map seen from this device, in the rows left under its rule: its device
+        // letters work here too, so a node is a tap target (that device's screen); each
+        // link's numbers are one `e` and its letter away (the edge editor).
         let band = Rect::new(r.x, fy + 2, r.width, r.bottom().saturating_sub(fy + 3));
-        let n = cx.hits.borrow().len();
         // The map grows into the rows it has (its rings are capped), so no void opens
         // between the sessions and the picture.
         let tall = if sz >= Size::M { band.height } else { 0 };
         let sel = link_sel.unwrap_or(&d.id);
         nebula::draw(cx, buf, band, &d.id, sel, links_focus, tall);
-        cx.hits.borrow_mut().truncate(n);
     } else if links_n == 0 && s.devices.len() == 1 && fy + 2 <= r.bottom() {
         // The only device: its network is itself, at the middle of its quiet orbits
         // (the welcome page's picture; the panel above offers `+ invite`), so the
@@ -1164,7 +1162,7 @@ pub(super) fn launch_panel(cx: &Cx, buf: &mut Buffer, r: Rect, d: &LabDevice) ->
             &fit(&t, room as usize, cx.uni()),
             cx.st(Tok::Muted),
         );
-        cx.chips(buf, x + 3, y, right, &[("r", "retry", "retry")]);
+        cx.chips(buf, x + 3, y, right, &[("R", "retry", "retry")]);
         y += 1;
     } else if y < r.bottom() {
         group(&mut y);
@@ -1222,7 +1220,7 @@ pub(super) fn launch_panel(cx: &Cx, buf: &mut Buffer, r: Rect, d: &LabDevice) ->
         if y >= r.bottom() {
             break;
         }
-        let mut x = cx0 + key(buf, cx0, y, SLOTS[0]);
+        let mut x = cx0 + key(buf, cx0, y, cx.slots()[0]);
         // (Phones: `↻` tells a resume from a start, the label column being gone.)
         if lw == 0 && !down {
             x += cx.put(buf, x, y, 2, cx.g("↻ ", "^ "), cx.st(Tok::Muted));
@@ -1259,7 +1257,7 @@ pub(super) fn launch_panel(cx: &Cx, buf: &mut Buffer, r: Rect, d: &LabDevice) ->
         if !down {
             cx.hit(
                 Rect::new(cx0, y, right - cx0, 1),
-                format!("launch:{}:{}", d.id, SLOTS[0]),
+                format!("launch:{}:{}", d.id, cx.slots()[0]),
             );
         }
         y += 1;
@@ -1267,7 +1265,9 @@ pub(super) fn launch_panel(cx: &Cx, buf: &mut Buffer, r: Rect, d: &LabDevice) ->
     // Recent folders: each opens the launch chooser there.
     let skip = usize::from(own.is_some());
     for (i, f) in folders.iter().take(nf as usize).enumerate() {
-        let k = SLOTS[skip + i];
+        let Some(&k) = cx.slots().get(skip + i) else {
+            break;
+        };
         if i == 0 {
             if y + u16::from(started.get() && gap) >= r.bottom() {
                 break;
@@ -2373,17 +2373,23 @@ pub(super) fn palette(cx: &Cx, buf: &mut Buffer, a: Rect, q: &str, cursor: usize
     let inner = inset(r, 2, 1);
     let y = inner.y;
     let mut x = inner.x;
+    // `/ ` finds anything; where an agent starts, its words (`claude in `).
+    let prompt =
+        cx.s.palette_prompt
+            .as_ref()
+            .map_or("/ ".to_string(), |p| format!("{p} "));
+    let pw = super::width(&prompt, cx.uni());
     x += cx.put(
         buf,
         x,
         y,
-        2,
-        "/ ",
+        pw,
+        &prompt,
         cx.st(Tok::Accent).add_modifier(Modifier::BOLD),
     );
     // A query longer than the field shows its end, where the typing is (or as much
     // before the cursor as fits, when the cursor is further left).
-    let room = usize::from(inner.width.saturating_sub(4));
+    let room = usize::from(inner.width.saturating_sub(pw + 2));
     let n = q.chars().count();
     let cursor = cursor.min(n);
     let start = if n > room && room > 1 {
@@ -2416,18 +2422,24 @@ pub(super) fn palette(cx: &Cx, buf: &mut Buffer, a: Rect, q: &str, cursor: usize
     let mv = "↑↓";
     // (Phones tap a row, so their row keeps `esc close` in place of the arrows.)
     // (Nothing found: go and move would do nothing.)
-    let chips: &[(&str, &str, &str)] = if rows.is_empty() {
-        &[("esc", "close", "back")]
+    // (Where an agent starts: `⏎` starts it there, Tab browses the folder instead.)
+    let start = cx.s.palette_prompt.is_some();
+    let go = if start { "start" } else { "go" };
+    let mut chips: Vec<(&str, &str, &str)> = if rows.is_empty() {
+        vec![("esc", "close", "back")]
     } else if cx.touch() {
-        &[(cx.ret(), "go", "go"), ("esc", "close", "back")]
+        vec![(cx.ret(), go, "go"), ("esc", "close", "back")]
     } else {
-        &[
-            (cx.ret(), "go", "go"),
+        vec![
+            (cx.ret(), go, "go"),
             (mv, "move", ""),
             ("esc", "close", "back"),
         ]
     };
-    cx.chips(buf, inner.x, hint_y, inner.right(), chips);
+    if start && !rows.is_empty() && !cx.touch() {
+        chips.insert(2, ("tab", "files", ""));
+    }
+    cx.chips(buf, inner.x, hint_y, inner.right(), &chips);
     // One breathing row between the last result and the hint chips.
     let inner = Rect::new(
         inner.x,
@@ -3641,6 +3653,12 @@ fn help(cx: &Cx, buf: &mut Buffer, r: Rect) {
             .collect::<Vec<_>>()
             .join(" ")
     };
+    // This screen's session keys (the letters devices leave), the first `n` of them.
+    let slot_keys = |n: usize| -> String {
+        let mut v: Vec<String> = cx.slots().iter().take(n).map(|c| c.to_string()).collect();
+        v.push("…".into());
+        v.join(" ")
+    };
     let resume_keys = |ags: &[&crate::model::Agent]| -> String {
         ags.iter()
             .map(|a| a.resume_key.to_string())
@@ -3665,7 +3683,7 @@ fn help(cx: &Cx, buf: &mut Buffer, r: Rect) {
                 "session",
                 vec![
                     (
-                        k("s d g q …"),
+                        slot_keys(4),
                         if wide {
                             "attach the session showing that key"
                         } else {
@@ -3673,7 +3691,7 @@ fn help(cx: &Cx, buf: &mut Buffer, r: Rect) {
                         },
                     ),
                     (
-                        k("s d g …"),
+                        slot_keys(3),
                         if wide {
                             "nothing running: resume / a recent folder"
                         } else {
@@ -3690,7 +3708,7 @@ fn help(cx: &Cx, buf: &mut Buffer, r: Rect) {
                     ),
                     (k(key("␣")), "peek"),
                     (k(key("⌫")), "stop (press twice)"),
-                    (k("w p t"), "watch / pin / its tasks"),
+                    (k("W P S"), "watch / pin / subagents"),
                 ],
             ),
             (
@@ -3717,11 +3735,27 @@ fn help(cx: &Cx, buf: &mut Buffer, r: Rect) {
                         },
                     ),
                     (resume_keys(&anywhere), resumes(&anywhere, wide)),
+                    (
+                        k("c ⏎"),
+                        if wide {
+                            "where its keys start (type to pick a folder)"
+                        } else {
+                            "in the default folder"
+                        },
+                    ),
                 ],
             ),
             (
                 "device",
                 vec![
+                    (
+                        String::new(),
+                        if wide {
+                            "another device's letter opens it"
+                        } else {
+                            "a letter: that device"
+                        },
+                    ),
                     (k("f"), "files"),
                     (
                         k("e"),
@@ -3731,9 +3765,9 @@ fn help(cx: &Cx, buf: &mut Buffer, r: Rect) {
                             "then a letter: link"
                         },
                     ),
-                    (k("r"), "retry"),
+                    (k("R"), "retry"),
                     (
-                        k("b E D"),
+                        k("B E D"),
                         if wide {
                             "access / edit address / remove"
                         } else {

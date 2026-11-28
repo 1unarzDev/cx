@@ -1,24 +1,24 @@
-//! Device letters for the hub (docs/design/concept-mission.md section 6).
+//! Device letters (docs/design/concept-mission.md section 6).
 //!
-//! Hub keys are non-letters plus `e` (link), `c x a o n` (claude, codex, agy, opencode,
-//! shell where cx was started) and `j k gg G` (motion), so every other letter can be a
-//! device. `g h j k l` go last, only past 15 devices, so `gg` stays the first row and a
-//! vim hand never opens a device by accident; `e c x a o n` are never assigned (20
-//! letters in all). A device
-//! keeps its letter for as long as it stays in the list, so refreshes and new devices
-//! never move an existing letter.
-// (A device whose initial is taken prefers letters that are not session slots.)
-use super::views::mission::HOME;
+//! One namespace per device screen, by priority: its action keys (`c x a o n` start
+//! agents and shells, `f` files, `e` links, `h j k l` move) are never device letters;
+//! each device then takes the first free letter of its name, letter by letter (else
+//! the first free letter of the alphabet; `g` last, so `gg` stays the picker's first
+//! row); sessions get the letters left (`mission::slots`). The same letters open a
+//! device from the picker and from every device's screen. A device keeps its letter
+//! for as long as it stays in the list, so refreshes and new devices never move an
+//! existing letter.
 use std::collections::BTreeMap;
 
-/// `e` (link), `n` (shell) and every agent's key are never device letters.
-fn never(c: char) -> bool {
-    c == 'e' || c == 'n' || crate::model::is_agent_key(c)
+/// A device screen's action keys: never device letters.
+pub(super) fn never(c: char) -> bool {
+    matches!(c, 'e' | 'n' | 'f' | 'h' | 'j' | 'k' | 'l') || crate::model::is_agent_key(c)
 }
-const LATE: [char; 5] = ['g', 'h', 'j', 'k', 'l'];
+/// Given out last: `gg` is the picker's first row while no device holds it.
+const LATE: char = 'g';
 
 /// Assign letters to `devices` (id, name), keeping every letter in `previous` whose device
-/// is still listed. Devices past the 20 assignable letters get none.
+/// is still listed. Devices past the 15 assignable letters get none.
 pub(super) fn assign(
     devices: &[(&str, &str)],
     previous: &BTreeMap<String, char>,
@@ -33,33 +33,19 @@ pub(super) fn assign(
             }
         }
     }
-    let early = |c: char| c.is_ascii_lowercase() && !never(c) && !LATE.contains(&c);
+    let early = |c: char| c.is_ascii_lowercase() && !never(c) && c != LATE;
     for (id, name) in devices {
         if out.contains_key(*id) {
             continue;
         }
-        let letters: Vec<char> = name.chars().map(|c| c.to_ascii_lowercase()).collect();
         let free = |c: &char, taken: &[char]| !taken.contains(c);
-        // The initial, then the name's other letters that are not slots, then any early
-        // letter, then the late ones (the name's first).
-        let pick = letters
-            .first()
-            .copied()
-            .filter(|c| early(*c) && free(c, &taken))
-            .or_else(|| {
-                letters
-                    .iter()
-                    .copied()
-                    .find(|c| early(*c) && !HOME.contains(c) && free(c, &taken))
-            })
+        // The name, letter by letter; then any early letter; then `g`.
+        let pick = name
+            .chars()
+            .map(|c| c.to_ascii_lowercase())
+            .find(|c| early(*c) && free(c, &taken))
             .or_else(|| ('a'..='z').find(|c| early(*c) && free(c, &taken)))
-            .or_else(|| {
-                letters
-                    .iter()
-                    .copied()
-                    .find(|c| LATE.contains(c) && free(c, &taken))
-            })
-            .or_else(|| LATE.iter().copied().find(|c| free(c, &taken)));
+            .or_else(|| Some(LATE).filter(|c| free(c, &taken)));
         if let Some(c) = pick {
             out.insert(id.to_string(), c);
             taken.push(c);
@@ -78,30 +64,29 @@ mod tests {
     }
 
     #[test]
-    fn initials_first_reserved_initials_take_a_later_non_slot_letter() {
+    fn each_device_takes_the_first_free_letter_of_its_name() {
+        // The user's fleet: `c` is claude, `r` is free now that retry is `R`.
         let m = run(&[
-            "tranquility",
             "innovation",
-            "laptop-guest",
-            "eve",
-            "nas",
+            "tranquility",
+            "blastoise-odroid",
             "creation",
+            "blastoise-jetson",
         ]);
-        assert_eq!(m["tranquility"], 't');
-        assert_eq!(m["innovation"], 'i');
-        // `l` is late and `a` Antigravity's: laptop-guest is `p`, as in the design.
-        assert_eq!(m["laptop-guest"], 'p');
-        // `e c x a o n` are never device letters (link, claude, codex, agy, opencode,
-        // shell); nas's other letter `s` is a slot, so it takes the first free one.
-        assert_eq!(m["eve"], 'v');
-        assert_eq!(m["nas"], 'b');
-        assert_eq!(m["creation"], 'r');
+        assert_eq!(
+            (m["innovation"], m["tranquility"], m["blastoise-odroid"]),
+            ('i', 't', 'b')
+        );
+        assert_eq!((m["creation"], m["blastoise-jetson"]), ('r', 's'));
+        // `l` moves, `a` is Antigravity's: laptop-guest is `p`.
+        assert_eq!(run(&["laptop-guest"])["laptop-guest"], 'p');
+        // A name of action keys only: the first free letter of the alphabet.
+        assert_eq!(run(&["eco"])["eco"], 'b');
     }
 
-    /// Two devices never share a letter, so an address reads without colour (the old
-    /// two-letter chips repeated `[la]` for laptop and lab-arm).
+    /// Two devices never share a letter, so an address reads without colour.
     #[test]
-    fn device_initials_stay_unique_without_color() {
+    fn device_letters_stay_unique_without_color() {
         let m = run(&["laptop", "lab-arm", "lab-arm-2", "field-rover"]);
         let mut letters: Vec<char> = m.values().copied().collect();
         letters.sort();
@@ -112,7 +97,7 @@ mod tests {
     #[test]
     fn letters_stay_stable_when_devices_come_and_go() {
         let first = run(&["innovation", "isaac"]);
-        assert_eq!((first["innovation"], first["isaac"]), ('i', 'b'));
+        assert_eq!((first["innovation"], first["isaac"]), ('i', 's'));
         // A new device listed first never takes an existing letter.
         let list = [
             ("ivy", "ivy"),
@@ -120,47 +105,32 @@ mod tests {
             ("isaac", "isaac"),
         ];
         let next = assign(&list, &first);
-        assert_eq!((next["innovation"], next["isaac"]), ('i', 'b'));
+        assert_eq!((next["innovation"], next["isaac"]), ('i', 's'));
         assert_eq!(next["ivy"], 'v');
         // A removed device frees its letter; the rest keep theirs.
         let gone = assign(&[("isaac", "isaac")], &next);
         assert_eq!(gone.len(), 1);
-        assert_eq!(gone["isaac"], 'b');
-        // A letter now reserved is never kept from before (`a` and `o` were device
-        // letters before Antigravity and opencode).
-        let old = BTreeMap::from([
-            ("creation".to_string(), 'c'),
-            ("atlas".to_string(), 'a'),
-            ("orin".to_string(), 'o'),
-        ]);
-        let now = assign(
-            &[
-                ("creation", "creation"),
-                ("atlas", "atlas"),
-                ("orin", "orin"),
-            ],
-            &old,
-        );
-        assert_eq!(
-            (now["creation"], now["atlas"], now["orin"]),
-            ('r', 't', 'i')
-        );
+        assert_eq!(gone["isaac"], 's');
+        // A letter now reserved is never kept from before (`f` and `h` were device
+        // letters before they became files and motion on every device screen).
+        let old = BTreeMap::from([("forge".to_string(), 'f'), ("hal".to_string(), 'h')]);
+        let now = assign(&[("forge", "forge"), ("hal", "hal")], &old);
+        assert_eq!((now["forge"], now["hal"]), ('r', 'b'));
     }
 
     #[test]
-    fn ghjkl_only_past_15_devices_and_never_e_c_x_a_o_n() {
+    fn g_only_last_and_never_an_action_key() {
         let names: Vec<String> = (0..26)
             .map(|i| format!("{}x", (b'a' + i) as char))
             .collect();
         let list: Vec<(&str, &str)> = names.iter().map(|n| (n.as_str(), n.as_str())).collect();
-        let m = assign(&list[..15], &BTreeMap::new());
-        assert!(m.values().all(|c| !"ecxaonghjkl".contains(*c)), "{m:?}");
-        assert_eq!(m.len(), 15);
-        // Every fleet size the hub is tested at: never `e c x a o n`, letters unique.
+        let m = assign(&list[..14], &BTreeMap::new());
+        assert!(m.values().all(|c| !"ecxaonfhjklg".contains(*c)), "{m:?}");
+        assert_eq!(assign(&list[..15], &BTreeMap::new())["ox"], 'g', "g last");
         for n in 1..=25 {
             let m = assign(&list[..n], &BTreeMap::new());
-            assert!(m.values().all(|c| !"ecxaon".contains(*c)), "{n}: {m:?}");
-            assert_eq!(m.len(), n.min(20), "20 assignable letters");
+            assert!(m.values().all(|c| !never(*c)), "{n}: {m:?}");
+            assert_eq!(m.len(), n.min(15), "15 assignable letters");
             let mut seen: Vec<char> = m.values().copied().collect();
             seen.sort();
             seen.dedup();

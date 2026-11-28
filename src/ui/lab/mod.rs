@@ -1539,16 +1539,13 @@ mod key_tests {
                             d.id
                         );
                     }
-                    // A device screen's letters are its sessions': no other device or
-                    // link is a target there (they would be options without keys).
-                    if let LabView::DeviceFocus(id) = v {
+                    // A device screen's map nodes open the device they show (their
+                    // letters work there too; a device past the letters is a tap away).
+                    if let LabView::DeviceFocus(_) = v {
                         for t in &targets {
-                            let other = t.action.strip_prefix("device:").is_some_and(|x| x != id);
-                            assert!(
-                                !other && !t.action.starts_with("edge:"),
-                                "keyless {}: {at}",
-                                t.action
-                            );
+                            if let Some(o) = t.action.strip_prefix("device:") {
+                                assert!(s.device(o).is_some(), "{at}");
+                            }
                         }
                     }
                     // `/` is labelled once: the chip, or the footer's `find`.
@@ -1563,8 +1560,14 @@ mod key_tests {
                             continue;
                         };
                         let at = format!("{at} {id}");
-                        let k = s.session(id).and_then(|x| x.key);
-                        let k = k.unwrap_or_else(|| panic!("no key: {at}"));
+                        // (Past the key pool a tile has none: `/ +N more` finds it.)
+                        let pool =
+                            crate::ui::views::mission::slots(s.devices.iter().map(|d| d.hotkey));
+                        let Some(k) = s.session(id).and_then(|x| x.key) else {
+                            let keyed = s.sessions_on(d).filter(|x| x.key.is_some()).count();
+                            assert_eq!(keyed, pool.len(), "no key: {at}");
+                            continue;
+                        };
                         assert!(seen.insert((d.to_string(), k)), "key {k} twice: {at}");
                         let r = row(t.area);
                         assert!(r.contains(&format!(" {k} ")), "{at}: {r}");

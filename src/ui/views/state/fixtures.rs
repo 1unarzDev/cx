@@ -318,9 +318,8 @@ pub fn assign_keys(s: &mut LabState) {
         }
         let d = s.sessions[i].device.clone();
         let taken: Vec<char> = s.sessions_on(&d).filter_map(|x| x.key).collect();
-        s.sessions[i].key = crate::ui::views::mission::SLOTS
-            .iter()
-            .copied()
+        s.sessions[i].key = crate::ui::views::mission::slots(s.devices.iter().map(|d| d.hotkey))
+            .into_iter()
             .find(|c| !taken.contains(c));
     }
 }
@@ -879,6 +878,7 @@ pub fn typical() -> LabState {
         }],
         ended: Vec::new(),
         palette: None,
+        palette_prompt: None,
     };
     assign_keys(&mut s);
     s
@@ -922,6 +922,7 @@ pub fn small() -> LabState {
         transfers: vec![],
         ended: Vec::new(),
         palette: None,
+        palette_prompt: None,
     };
     for d in &mut s.devices {
         d.meshes.retain(|m| m == "cloudflare-warp");
@@ -953,7 +954,7 @@ pub fn large() -> LabState {
         ("old-thinkpad-x220", Down),
         ("vps-fra1", Online),
     ];
-    // The real app's letters (`hotkeys::assign`): never `e c x a o n`, `g h j k l` last.
+    // The real app's letters (`hotkeys::assign`): never an action key, `g` last.
     let names: Vec<&str> = extra.iter().map(|(n, _)| *n).collect();
     let keys = letters(&s, &names);
     for (i, (name, status)) in extra.iter().enumerate() {
@@ -1503,7 +1504,7 @@ pub fn crowded() -> LabState {
     let order = |x: &LabSession| {
         x.key
             .and_then(|k| {
-                crate::ui::views::mission::SLOTS
+                crate::ui::views::mission::slots(s.devices.iter().map(|d| d.hotkey))
                     .iter()
                     .position(|c| *c == k)
             })

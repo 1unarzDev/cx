@@ -243,6 +243,15 @@ impl App {
                     }
                 }
             }
+            Operation::RecentFolders => {
+                let dirs: Vec<String> = serde_json::from_value(value).unwrap_or_default();
+                let asked = self
+                    .recent_folders
+                    .get(&reply.device)
+                    .map_or_else(transport::now, |(_, at)| *at);
+                let dirs = dirs.into_iter().take(200).collect();
+                self.recent_folders.insert(reply.device, (dirs, asked));
+            }
             Operation::ExternalSessions => {
                 if let Ok(mut external) = serde_json::from_value::<Vec<Session>>(value) {
                     let selected = self

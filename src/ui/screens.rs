@@ -3,7 +3,7 @@
 //! a device letter, then a verb or a session slot (docs/design/concept-mission.md 6).
 //! Keys, taps and context-menu rows all end in the same methods here.
 use super::viewmodel::{dev_id, dev_index};
-use super::views::mission::{HOME, SLOTS};
+use super::views::mission::HOME;
 use super::*;
 
 /// The edge editor: which link (`a-b`, the opener first) and which lane has the bar.
@@ -108,7 +108,12 @@ impl App {
         }
         self.hotkeys.borrow()
     }
-    /// A device's sessions in key order (`a s d g ...`, then those without a key): the
+    /// Session keys on device screens: the letters the action keys and the devices'
+    /// letters leave (`mission::slots`).
+    pub(super) fn slot_pool(&self) -> Vec<char> {
+        super::views::mission::slots(self.hotkeys().values().copied())
+    }
+    /// A device's sessions in key order (`s d g ...`, then those without a key): the
     /// order its tiles are drawn in.
     pub(super) fn slot_sessions(&self, d: usize) -> Vec<&Session> {
         self.slot_keys(d).into_iter().map(|(s, _)| s).collect()
@@ -134,7 +139,12 @@ impl App {
         list.retain(|s| open || !super::is_discovered_external(s));
         let live: Vec<String> = list.iter().map(|s| workspaces::runtime_key(s)).collect();
         let mut memo = self.slot_memo.borrow_mut();
-        let keys = assign_slots(memo.get(&self.devices[d].id).map_or(&[][..], |v| v), &live);
+        let pool = self.slot_pool();
+        let keys = assign_slots(
+            memo.get(&self.devices[d].id).map_or(&[][..], |v| v),
+            &live,
+            &pool,
+        );
         let mut out: Vec<(&Session, Option<char>)> = list
             .into_iter()
             .zip(&live)
@@ -142,7 +152,7 @@ impl App {
             .collect();
         memo.insert(self.devices[d].id.clone(), keys);
         out.sort_by_key(|(_, k)| {
-            k.and_then(|k| SLOTS.iter().position(|c| *c == k))
+            k.and_then(|k| pool.iter().position(|c| *c == k))
                 .unwrap_or(usize::MAX)
         });
         out
@@ -643,7 +653,12 @@ impl App {
             }
             return;
         }
-        self.quick_launch(d, self.launch_dir(d), provider, resume);
+        // An agent asks where first (its folders, the default on top); a shell starts
+        // at once where the device's keys start.
+        match crate::model::agent(provider) {
+            Some(agent) => self.open_where(d, agent.id, resume),
+            None => self.quick_launch(d, self.launch_dir(d), provider, resume),
+        }
     }
     /// The hub's bare `c x n C X`: this device, in the folder cx was started in (never
     /// a device letter, never scoped by the hub's selection).
@@ -1117,7 +1132,9 @@ impl App {
         if let Some((d, session)) = self.stop_armed.take() {
             match key.code {
                 KeyCode::Backspace => self.send_stop(d, session),
-                KeyCode::Char(c) if plain && self.view == View::Work && SLOTS.contains(&c) => {
+                KeyCode::Char(c)
+                    if plain && self.view == View::Work && self.slot_pool().contains(&c) =>
+                {
                     if let Some(k) = self
                         .session_for_key(d, c)
                         .map(|s| workspaces::runtime_key(&s))
@@ -1233,7 +1250,7 @@ impl App {
                 true
             }
             // A session's key attaches it; a digit no session holds stays a count (`5j`).
-            KeyCode::Char(c) if SLOTS.contains(&c) => match self.session_for_key(d, c) {
+            KeyCode::Char(c) if self.slot_pool().contains(&c) => match self.session_for_key(d, c) {
                 Some(s) => {
                     self.attach_session(d, s);
                     true
@@ -1258,8 +1275,15 @@ impl App {
                 self.open_files(d);
                 true
             }
-            KeyCode::Char('r') => {
+            KeyCode::Char('R') => {
                 self.retry(d);
+                true
+            }
+            // Another device's letter: its screen (this one's own letter stays here).
+            KeyCode::Char(c) if self.device_for_letter(c).is_some() => {
+                if let Some(n) = self.device_for_letter(c).filter(|n| *n != d) {
+                    self.open_device(n);
+                }
                 true
             }
             // Tab between the zones (tiles, LINKS); arrows and `h j k l` on screen.
@@ -1468,8 +1492,9 @@ impl App {
             }
             View::Work if self.device > 0 => {
                 if let Some(n) = self.device_link.as_deref().and_then(dev_index) {
-                    // A link in the LINKS zone: its editor (as `e` and its letter).
-                    self.open_edge(self.device - 1, n);
+                    // A device on the map: its screen (its link's editor is `e` and
+                    // its letter).
+                    self.open_device(n);
                 } else if self.outside_focused() {
                     self.toggle_outside(self.device - 1);
                 } else if self.selected_session().is_some() {
@@ -1830,19 +1855,19 @@ pub(super) fn toward<'a>(
         .copied()
 }
 
-/// Keys for the live sessions (runtime keys, slot order): each keeps the key it had,
-/// the others take the first free ones in `SLOTS` order.
-fn assign_slots(prev: &[(String, char)], live: &[String]) -> Vec<(String, char)> {
+/// Keys for the live sessions (runtime keys, slot order): each keeps the key it had
+/// while it is still in `pool`, the others take the first free ones in `pool` order.
+fn assign_slots(prev: &[(String, char)], live: &[String], pool: &[char]) -> Vec<(String, char)> {
     let mut out: Vec<(String, char)> = prev
         .iter()
-        .filter(|(k, _)| live.contains(k))
+        .filter(|(k, c)| live.contains(k) && pool.contains(c))
         .cloned()
         .collect();
     for k in live {
         if out.iter().any(|(x, _)| x == k) {
             continue;
         }
-        if let Some(c) = SLOTS.iter().find(|c| out.iter().all(|(_, y)| y != *c)) {
+        if let Some(c) = pool.iter().find(|c| out.iter().all(|(_, y)| y != *c)) {
             out.push((k.clone(), *c));
         }
     }
@@ -1858,19 +1883,30 @@ mod slot_tests {
     #[test]
     fn a_session_keeps_its_key_until_it_ends_and_new_ones_take_the_first_free() {
         let ids = |n: &[&str]| n.iter().map(|s| s.to_string()).collect::<Vec<_>>();
-        let a = assign_slots(&[], &ids(&["1", "2", "3"]));
-        assert_eq!(keys(&a), "sdg");
-        // `1` ended: `2` and `3` keep `d` and `g`; the next new one takes `s`.
-        let b = assign_slots(&a, &ids(&["2", "3"]));
-        assert_eq!(keys(&b), "dg");
-        let c = assign_slots(&b, &ids(&["2", "3", "4"]));
-        assert_eq!(c.iter().find(|(k, _)| k == "4").unwrap().1, 's');
-        // Past the 19 keys a session has none (`a` and `o` start agents).
+        // The user's fleet holds `i t b r s`: sessions get the letters left.
+        let pool = crate::ui::views::mission::slots("itbrs".chars());
+        assert_eq!(pool.iter().collect::<String>(), "dgqwyupzvm123456789");
+        let a = assign_slots(&[], &ids(&["1", "2", "3"]), &pool);
+        assert_eq!(keys(&a), "dgq");
+        // `1` ended: `2` and `3` keep `g` and `q`; the next new one takes `d`.
+        let b = assign_slots(&a, &ids(&["2", "3"]), &pool);
+        assert_eq!(keys(&b), "gq");
+        let c = assign_slots(&b, &ids(&["2", "3", "4"]), &pool);
+        assert_eq!(c.iter().find(|(k, _)| k == "4").unwrap().1, 'd');
+        // Past the pool a session has none.
         let many: Vec<String> = (0..25).map(|i| i.to_string()).collect();
-        let d = assign_slots(&[], &many);
-        assert_eq!(d.len(), 19);
-        assert_eq!(keys(&d), "sdgquiyzvm123456789");
+        let d = assign_slots(&[], &many, &pool);
+        assert_eq!(d.len(), pool.len());
+        // A key a new device took is given up; the session takes a free one.
+        let fewer = crate::ui::views::mission::slots("itbrsd".chars());
+        let e = assign_slots(&a, &ids(&["1", "2", "3"]), &fewer);
+        assert!(
+            e.iter().all(|(_, c)| fewer.contains(c)) && e.len() == 3,
+            "{e:?}"
+        );
         assert_eq!(super::HOME, ['s', 'd', 'g']);
-        assert!(super::SLOTS.iter().all(|c| !"ecxaonACXO".contains(*c)));
+        // Never an action key: new agents, shell, files, links, motion.
+        let all = crate::ui::views::mission::slots(std::iter::empty());
+        assert!(all.iter().all(|c| !"ecxaonfhjklACXO".contains(*c)));
     }
 }

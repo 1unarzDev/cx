@@ -170,7 +170,7 @@ fn vitals(cx: &Cx, buf: &mut Buffer, r: Rect, d: &LabDevice, ghost: bool) {
     // (The first tile's own key, `s` unless it changed hands.)
     let slot = first
         .and_then(|x| x.key)
-        .unwrap_or(super::SLOTS[0])
+        .unwrap_or(cx.slots()[0])
         .to_string();
     let new = format!("new:{}:claude", d.id);
     let files = format!("files:{}", d.id);
@@ -335,7 +335,7 @@ fn alerts(cx: &Cx) -> Vec<Alert> {
         };
         let head = n.text.replace(" for ", " ");
         let (keys, verb) = match (d, n.action.as_deref()) {
-            (Some(d), Some("retry")) => (format!("@{} r", d.hotkey), "retry"),
+            (Some(d), Some("retry")) => (format!("@{} R", d.hotkey), "retry"),
             (Some(d), _) => (format!("@{}", d.hotkey), "inspect"),
             _ => ("/".to_string(), "find"),
         };

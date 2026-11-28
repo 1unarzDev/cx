@@ -420,6 +420,9 @@ pub(super) enum PaletteTarget {
     Neighbor(usize, String),
     /// Run the typed command (palette run mode).
     Run,
+    /// Start the agent the palette asks for (`launch_where`) in this folder (as
+    /// `launch_dir` spells it: `~` or an encoded path).
+    Launch(usize, String),
 }
 #[derive(Clone, Debug)]
 pub(super) struct PaletteItem {
@@ -432,7 +435,8 @@ pub(super) struct PaletteItem {
     pub id: String,
 }
 /// Section order on equal scores (spec 6.6: switcher first, then actions).
-const PALETTE_SECTIONS: [&str; 6] = [
+const PALETTE_SECTIONS: [&str; 7] = [
+    "Start in",
     "Sessions",
     "Actions",
     "Go to",
@@ -446,6 +450,20 @@ impl App {
     /// Every palette source: sessions on all devices, valid actions, goto,
     /// devices and recently used folders. Unranked.
     pub(super) fn palette_sources(&self) -> Vec<PaletteItem> {
+        if let Some((d, _, _)) = self.launch_where {
+            return self
+                .where_folders(d)
+                .into_iter()
+                .map(|(dir, label, detail)| PaletteItem {
+                    section: "Start in",
+                    id: format!("where:{}:{dir}", self.devices[d].id),
+                    label,
+                    detail: detail.into(),
+                    key: "Enter".into(),
+                    target: PaletteTarget::Launch(d, dir),
+                })
+                .collect();
+        }
         let mut items = Vec::new();
         let mut folders: Vec<(usize, String)> = Vec::new();
         for (d, cache) in self.work.iter().enumerate() {
@@ -609,10 +627,12 @@ impl App {
                         .contains(&needle)
                         .then(|| fuzzy_score(query, &item.detail).unwrap_or(0) - 100)
                 })?;
+                // (Where an agent starts keeps its own order: the default first.)
                 let recency = self
                     .palette_mru
                     .iter()
                     .position(|id| *id == item.id)
+                    .filter(|_| self.launch_where.is_none())
                     .map_or(0, |at| (PALETTE_MRU - at.min(PALETTE_MRU)) as i64 * 2);
                 Some((score + recency, order, item))
             })
@@ -698,6 +718,13 @@ impl App {
                     self.connect_neighbor(d, c);
                 }
             }
+            PaletteTarget::Launch(d, dir) => {
+                self.input = None;
+                self.text.clear();
+                if let Some((_, agent, resume)) = self.launch_where.take() {
+                    self.quick_launch(d, dir, agent, resume);
+                }
+            }
             PaletteTarget::Run => {}
         }
     }
@@ -733,6 +760,7 @@ pub(super) const RUN_PREFIX: &str = "run: ";
 impl App {
     /// Open the palette with a prefilled query (empty for Ctrl+P).
     pub(super) fn open_palette(&mut self, query: &str) {
+        self.launch_where = None;
         self.input = Some(Input::Palette);
         self.text = query.to_owned();
         self.rename_cursor = self.text.len();

@@ -103,6 +103,11 @@ def main():
             for k in keys:
                 v.write(k)
                 v.read(.15)
+            # (An agent's key asks where first, v0.7.0: Enter takes the top row, where
+            # the keys used to start.)
+            wait(v, lambda: len(launches()) > before or ' in ▏' in text(v), f'{keys!r}: nothing')
+            if ' in ▏' in text(v):
+                v.write(b'\r')
             wait(v, lambda: len(launches()) > before, f'{keys!r}: no launch')
             got = launches()[before]
             assert got == expect, f'{keys!r}: launched {got!r}, expected {expect!r}'

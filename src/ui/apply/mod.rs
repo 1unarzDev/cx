@@ -204,8 +204,11 @@ impl App {
         // External-terminal discovery is a best-effort UI extra; a failing or
         // unreachable device must not raise a notice for it. A failed listing is the
         // hub ticker's (with its retry key), so it raises no toast either.
-        let notify_error =
-            notify_error && !matches!(reply.op, Operation::ExternalSessions | Operation::Sessions);
+        let notify_error = notify_error
+            && !matches!(
+                reply.op,
+                Operation::ExternalSessions | Operation::Sessions | Operation::RecentFolders
+            );
         let listing_offset = match &reply.op {
             Operation::ListPage { offset, .. } => *offset,
             _ => 0,
@@ -440,6 +443,7 @@ impl App {
             Operation::Info
                 | Operation::Sessions
                 | Operation::ExternalSessions
+                | Operation::RecentFolders
                 | Operation::AdoptSession { .. }
                 | Operation::Create(_)
                 | Operation::CreateYolo(_)

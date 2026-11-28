@@ -65,7 +65,7 @@ impl App {
     /// that ended (the agent's latest conversation in its folder, or a shell there), or
     /// open the launch chooser in a recent folder. False when the key names nothing.
     pub(super) fn launch_item(&mut self, d: usize, c: char) -> bool {
-        let Some(i) = super::views::mission::SLOTS.iter().position(|k| *k == c) else {
+        let Some(i) = self.slot_pool().iter().position(|k| *k == c) else {
             return false;
         };
         let (resume, dirs) = self.launch_items(d);
@@ -359,6 +359,96 @@ impl App {
             .or_else(|| self.file_locations.get(&d).cloned())
             .unwrap_or_else(|| "~".into())
     }
+    /// `c x a o` (`C X A O` resume) on a device: the palette asks where first, listing
+    /// that device's folders (`where_folders`); its first row is where the keys used to
+    /// start, so `c ⏎` is the old launch.
+    pub(super) fn open_where(&mut self, d: usize, agent: &'static str, resume: bool) {
+        if self.launch_blocked(d) || self.agent_missing(d, agent) {
+            return;
+        }
+        self.open_palette("");
+        self.launch_where = Some((d, agent, resume));
+        self.request_recent_folders(d);
+    }
+    /// Ask a device for its zoxide folders, at most once a minute, when its helper can.
+    fn request_recent_folders(&mut self, d: usize) {
+        let supported = self
+            .providers
+            .get(&d)
+            .is_some_and(|(caps, _)| caps.iter().any(|c| c == "recent-folders-v1"));
+        let asked = self.recent_folders.get(&d).map_or(0, |(_, at)| *at);
+        let now = transport::now();
+        if supported && now.saturating_sub(asked) >= 60 && self.send(d, Operation::RecentFolders) {
+            let dirs = self
+                .recent_folders
+                .remove(&d)
+                .map(|(v, _)| v)
+                .unwrap_or_default();
+            self.recent_folders.insert(d, (dirs, now));
+        }
+    }
+    /// Where an agent can start on `d`, in order: where its keys start (the folder cx
+    /// was started in, on this device), folders of its running sessions, cx's recent
+    /// ones (ended and pinned sessions', Files'), then its zoxide folders. Each as
+    /// (folder as `launch_dir` spells it, label, why it is listed); one row per folder.
+    pub(super) fn where_folders(&self, d: usize) -> Vec<(String, String, &'static str)> {
+        let device = &self.devices[d];
+        let local = device.target.is_none();
+        let mut out: Vec<(String, String, &'static str)> = Vec::new();
+        let mut add = |dir: String, why: &'static str| {
+            let plain = if dir == "~" {
+                dir.clone()
+            } else {
+                match crate::files::decode_path(&dir) {
+                    Ok(p) => p.to_string_lossy().into_owned(),
+                    Err(_) => return,
+                }
+            };
+            // (The home is `~` however it was spelled.)
+            let label = safe_label(&super::viewmodel::tilde(&plain, &device.account, local));
+            if plain.is_empty() || out.iter().any(|(_, l, _)| *l == label) {
+                return;
+            }
+            out.push((dir, label, why));
+        };
+        let start = if local && self.here.is_some() {
+            "where cx started"
+        } else {
+            "default"
+        };
+        add(self.launch_dir(d), start);
+        for s in &self.work[d].sessions {
+            if s.container.is_none() && !s.directory.is_empty() && !super::is_discovered_external(s)
+            {
+                add(s.directory.clone(), "running");
+            }
+        }
+        for dir in self.launch_items(d).1 {
+            add(dir, "recent");
+        }
+        if let Some((dirs, _)) = self.recent_folders.get(&d) {
+            for p in dirs {
+                add(crate::files::encode_path(std::path::Path::new(p)), "");
+            }
+        }
+        out
+    }
+    /// Tab while the palette asks where: browse the selected folder in Files instead.
+    pub(super) fn where_browse(&mut self) {
+        let Some(super::actions::PaletteTarget::Launch(d, dir)) = self
+            .palette_view()
+            .into_iter()
+            .nth(self.palette_selected)
+            .map(|i| i.target)
+        else {
+            return;
+        };
+        self.launch_where = None;
+        self.input = None;
+        self.text.clear();
+        self.open_host_browser(d, dir);
+        self.focus = Focus::Workspace;
+    }
     /// The one quick launch (the hub's and a device's `c x n C X`, Files' `!` keys, the
     /// launch panel's resume): `provider` in `directory` on `d`, resumed or new, in the
     /// mode it was last started in on that device, attached once it starts. No dialog.
@@ -369,19 +459,7 @@ impl App {
         provider: &str,
         resume: bool,
     ) {
-        if self.launch_blocked(d) {
-            return;
-        }
-        // The device's Info from the last minute says the agent is missing: nothing
-        // starts (it would only fail in its pane). Older or no Info: the device decides.
-        if crate::model::agent(provider).is_some()
-            && self.providers.get(&d).is_some_and(|(caps, checked)| {
-                transport::now().saturating_sub(*checked) < 60
-                    && !caps.iter().any(|c| c == provider)
-            })
-        {
-            let name = safe_text(&self.devices[d].name);
-            self.set_notice(format!("{provider} isn't installed on {name}"));
+        if self.launch_blocked(d) || self.agent_missing(d, provider) {
             return;
         }
         let yolo = provider != "shell" && self.last_yolo(d, provider);
@@ -397,6 +475,21 @@ impl App {
         }
         self.launch_provider = None;
         self.create_permission_session(d, then.directory, then.provider, yolo, resume, false);
+    }
+    /// The device's Info from the last minute says the agent is missing: nothing starts
+    /// (it would only fail in its pane) and a notice says so. Older or no Info: the
+    /// device decides.
+    fn agent_missing(&mut self, d: usize, provider: &str) -> bool {
+        let missing = crate::model::agent(provider).is_some()
+            && self.providers.get(&d).is_some_and(|(caps, checked)| {
+                transport::now().saturating_sub(*checked) < 60
+                    && !caps.iter().any(|c| c == provider)
+            });
+        if missing {
+            let name = safe_text(&self.devices[d].name);
+            self.set_notice(format!("{provider} isn't installed on {name}"));
+        }
+        missing
     }
     /// Nothing starts while a session is being created, or on a device that failed; a
     /// notice says which. True when blocked.

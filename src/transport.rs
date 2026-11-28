@@ -783,7 +783,10 @@ impl Connection {
 fn reconnectable_observation(op: &Operation) -> bool {
     matches!(
         op,
-        Operation::Info | Operation::Sessions | Operation::ExternalSessions
+        Operation::Info
+            | Operation::Sessions
+            | Operation::ExternalSessions
+            | Operation::RecentFolders
     )
 }
 fn retry_observation<T>(op: &Operation, mut attempt: impl FnMut() -> Result<T>) -> Result<T> {

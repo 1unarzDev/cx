@@ -493,6 +493,7 @@ fn info() -> Result<serde_json::Value> {
     caps.push("peer-authorize-v1");
     caps.push("adopt-session-v1");
     caps.push("metrics-v1");
+    caps.push("recent-folders-v1");
     // A relay that needs sudo can only move a terminal where a password prompt reaches
     // it: a viewer on this device. A helper reached over SSH has none, so a remote
     // viewer is offered the one-time cap_sys_ptrace install instead.
@@ -620,6 +621,7 @@ pub fn dispatch(op: Operation) -> Result<serde_json::Value> {
             }),
         ),
         Operation::ExternalSessions => Ok(serde_json::to_value(sessions::external_list()?)?),
+        Operation::RecentFolders => Ok(serde_json::to_value(files::recent_folders())?),
         Operation::AdoptSession {
             ref id,
             ref origin,

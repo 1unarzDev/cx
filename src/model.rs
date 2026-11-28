@@ -205,6 +205,10 @@ pub enum Operation {
     },
     /// Terminals started outside CX, shown for adoption in the UI only.
     ExternalSessions,
+    /// The device's most used folders by its zoxide database (frecency order), as
+    /// absolute paths: the launch folder list's candidates. Helper capability
+    /// `recent-folders-v1`; empty when zoxide is missing. Older helpers reject it.
+    RecentFolders,
     /// Move a terminal started outside CX into the managed tmux server.
     AdoptSession {
         id: String,

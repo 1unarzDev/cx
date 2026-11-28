@@ -42,7 +42,7 @@ mod dialogs;
 use dialogs::*;
 mod actions;
 mod containers_view;
-mod hotkeys;
+pub(super) mod hotkeys;
 mod input;
 mod keys;
 #[cfg(test)]
@@ -722,6 +722,10 @@ struct App {
     /// otherwise), and whether that row has the selection.
     outside_open: Option<usize>,
     outside_focus: bool,
+    /// The palette asks where an agent starts: (device, agent, resume).
+    launch_where: Option<(usize, &'static str, bool)>,
+    /// Each device's zoxide folders (`RecentFolders`) and when they were asked for.
+    recent_folders: BTreeMap<usize, (Vec<String>, u64)>,
     /// A device's LINKS zone has focus, on the neighbour (view-model id) it selects.
     device_link: Option<String>,
     hub_order: std::cell::RefCell<Vec<String>>,
@@ -931,6 +935,8 @@ impl App {
             hub_return: None,
             outside_open: None,
             outside_focus: false,
+            launch_where: None,
+            recent_folders: BTreeMap::new(),
             device_link: None,
             hub_order: Default::default(),
             nav: Default::default(),

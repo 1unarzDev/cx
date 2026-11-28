@@ -329,8 +329,8 @@ pub(super) const BINDINGS: &[Binding] = &[
     ),
     bind!(
         Device,
-        [ch('r')],
-        "r",
+        [ch('R')],
+        "R",
         Cmd::View("retry"),
         "Retry / refresh this device",
         hint("Retry")
@@ -345,8 +345,8 @@ pub(super) const BINDINGS: &[Binding] = &[
     ),
     bind!(
         Device,
-        [ch('w')],
-        "w",
+        [ch('W')],
+        "W",
         Cmd::Watch,
         "Watch selected session · read-only",
         hint("Watch · read-only"),
@@ -354,8 +354,8 @@ pub(super) const BINDINGS: &[Binding] = &[
     ),
     bind!(
         Device,
-        [ch('p')],
-        "p",
+        [ch('P')],
+        "P",
         Cmd::Pin,
         "Pin / unpin; keep an ended-work bookmark",
         hint("Pin / unpin"),
@@ -363,8 +363,8 @@ pub(super) const BINDINGS: &[Binding] = &[
     ),
     bind!(
         Device,
-        [ch('t')],
-        "t",
+        [ch('S')],
+        "S",
         Cmd::AgentTasks,
         "Inspect the session's tasks and subagents",
         hint("Agent tasks"),
@@ -372,8 +372,8 @@ pub(super) const BINDINGS: &[Binding] = &[
     ),
     bind!(
         Device,
-        [ch('b')],
-        "b",
+        [ch('B')],
+        "B",
         Cmd::EditAccess,
         "Edit this viewer's link to the device: key, password, one-way or none",
         None,

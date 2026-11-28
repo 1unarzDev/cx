@@ -189,14 +189,22 @@ fn device_slots_attach_and_moving_clamps_without_wrapping() {
 #[test]
 fn every_session_key_attaches_its_session_and_keys_are_stable() {
     let (mut a, _rx) = queued_app();
-    sessions(&mut a, 0, 21);
+    // Two more sessions than keys.
+    let n = a.slot_pool().len() + 2;
+    sessions(&mut a, 0, n);
     let keys: Vec<(String, Option<char>)> = a
         .slot_keys(0)
         .into_iter()
         .map(|(s, k)| (s.id.clone(), k))
         .collect();
     let given: String = keys.iter().filter_map(|(_, k)| *k).collect();
-    assert_eq!(given, "sdgquiyzvm123456789");
+    // The letters the action keys and the devices' letters leave, then the digits.
+    let pool: String = a.slot_pool().into_iter().collect();
+    assert_eq!(given, pool);
+    let letters: Vec<char> = a.hotkeys().values().copied().collect();
+    assert!(given
+        .chars()
+        .all(|c| !letters.contains(&c) && !"cxaonefhjkl".contains(c)));
     assert_eq!(keys.iter().filter(|(_, k)| k.is_none()).count(), 2);
     for (id, k) in keys.iter().filter_map(|(id, k)| k.map(|k| (id, k))) {
         a.open_device(0);
@@ -208,8 +216,8 @@ fn every_session_key_attaches_its_session_and_keys_are_stable() {
             .or_else(|| a.attach_check.take().map(|(_, s, _, _)| s.id));
         assert_eq!(attached.as_deref(), Some(id.as_str()), "key {k}");
     }
-    // `d` ends: the others keep theirs; the first without a key takes `d`.
-    let s_id = keys[1].0.clone();
+    // The second ends: the others keep theirs; the first without a key takes its key.
+    let (s_id, freed) = keys[1].clone();
     a.work[0].sessions.retain(|s| s.id != s_id);
     let after: Vec<(String, Option<char>)> = a
         .slot_keys(0)
@@ -222,7 +230,7 @@ fn every_session_key_attaches_its_session_and_keys_are_stable() {
         }
     }
     let heir = &keys.iter().find(|(_, k)| k.is_none()).unwrap().0;
-    assert!(after.contains(&(heir.clone(), Some('d'))));
+    assert!(after.contains(&(heir.clone(), freed)));
 }
 
 /// A device with nothing running: a session that ended while cx watched is its resume
@@ -552,7 +560,7 @@ fn help_and_footer_teach_the_design_keys_and_each_chip_runs_its_key() {
     assert!(a.view == View::Work, "esc chip went back like Esc");
     // The keymap still names the device verbs (context menus, `?`).
     a.open_device(0);
-    for (key, cmd) in [('w', Cmd::Watch), ('p', Cmd::Pin), ('?', Cmd::Help)] {
+    for (key, cmd) in [('W', Cmd::Watch), ('P', Cmd::Pin), ('?', Cmd::Help)] {
         assert_eq!(
             keymap::resolve(&a, &KeyEvent::new(KeyCode::Char(key), KeyModifiers::NONE)),
             Some(cmd)
@@ -1365,7 +1373,7 @@ fn help_is_the_table_of_the_screen_below() {
         text.contains("C X") && text.contains("resume claude"),
         "{text}"
     );
-    assert!(text.contains("b E D") && text.contains("w p t"), "{text}");
+    assert!(text.contains("B E D") && text.contains("W P S"), "{text}");
     // Files is yazi's: `~` opens its help, the keymap with the user's prepends first.
     let (mut a, _rx) = file_app();
     press(&mut a, '~');
@@ -2280,7 +2288,11 @@ fn every_launch_panel_keycap_does_what_its_tap_does() {
                 _ => None,
             })
             .collect();
+        // (An agent's key and tap ask where first: the folder list.)
+        let asked = a.launch_where.take();
+        a.input = None;
         let dialog = match a.dialog.take() {
+            _ if asked.is_some() => format!("where {asked:?}"),
             Some(Dialog::SessionChooser(d, p)) => format!("chooser {d} {p}"),
             Some(Dialog::Permissions(d, dir, p, ..)) => format!("permissions {d} {dir} {p}"),
             Some(Dialog::SessionPicker(d, dir, _, p, _)) => format!("picker {d} {dir} {p}"),
@@ -2362,7 +2374,9 @@ fn a_lone_device_starts_from_its_screen_with_one_key() {
     let text = draw(&a, 120, 40);
     assert!(text.contains(" x  codex"), "{text}");
     let _ = rx.try_iter().count();
+    // (`x` asks where first: `⏎` takes the folder cx was started in.)
     press(&mut a, 'x');
+    a.key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
     let started = rx
         .try_iter()
         .any(|t| matches!(&t.op, Operation::Create(c) if c.provider == "codex"));
@@ -2634,4 +2648,130 @@ fn peek_tab_walks_the_devices_tiles() {
     assert!(seen.iter().all(|(d, _)| *d == 0), "left the device");
     let ids: std::collections::BTreeSet<_> = seen.iter().map(|(_, s)| s.id.clone()).collect();
     assert_eq!(ids.len(), 3);
+}
+
+/// Device letters are one namespace with a device screen's keys: another device's
+/// letter opens its screen from any device's screen (its own stays put), and they are
+/// never a session's key there.
+#[test]
+fn device_letters_open_devices_from_every_device_screen() {
+    let (mut a, _rx) = queued_app();
+    sessions(&mut a, 0, 3);
+    a.go_home();
+    let laptop = letter(&a, 1);
+    assert!(!a.slot_pool().contains(&laptop));
+    press(&mut a, laptop);
+    assert_eq!((a.view, a.device), (View::Work, 2));
+    press(&mut a, laptop);
+    assert_eq!((a.view, a.device), (View::Work, 2), "its own letter stays");
+    let home = letter(&a, 0);
+    press(&mut a, home);
+    assert_eq!((a.view, a.device), (View::Work, 1));
+    // The verbs moved to Shift: `R` retries, the lowercase letters are free.
+    assert!(a.slot_pool().iter().all(|c| !"cxaonefhjkl".contains(*c)));
+}
+
+/// The device map under a device's sessions is a way there: `⏎` on its selected node
+/// opens that device's screen (its link's editor stays `e` and its letter).
+#[test]
+fn enter_on_the_device_map_opens_that_device() {
+    let (mut a, _rx) = queued_app();
+    sessions(&mut a, 0, 2);
+    a.go_home();
+    // (The map's node the arrows or Tab select.)
+    let to = viewmodel::dev_id(1);
+    a.device_link = Some(to.clone());
+    a.key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+    assert_eq!(a.view, View::Work);
+    assert_eq!(viewmodel::dev_id(a.device - 1), to);
+    assert!(a.edge.is_none());
+}
+
+/// `c` asks where first: the folder cx was started in on top (`c ⏎` is the old
+/// launch), then running sessions' folders, cx's recent ones and the device's zoxide
+/// folders (asked for once a minute, only from helpers that can); typing filters,
+/// `⏎` starts there and Tab browses the folder in Files instead.
+#[test]
+fn agent_keys_ask_where_and_list_the_devices_folders() {
+    let (mut a, rx) = queued_app();
+    a.here = Some("/work/proj".into());
+    sessions(&mut a, 0, 1);
+    a.work[0].sessions[0].directory = "/work/running".into();
+    a.providers
+        .get_mut(&0)
+        .unwrap()
+        .0
+        .push("recent-folders-v1".into());
+    a.go_home();
+    let _ = rx.try_iter().count();
+    press(&mut a, 'c');
+    assert_eq!(a.launch_where, Some((0, "claude", false)));
+    let asked: Vec<_> = rx
+        .try_iter()
+        .filter(|t| matches!(t.op, Operation::RecentFolders))
+        .collect();
+    assert_eq!(asked.len(), 1, "zoxide folders asked for");
+    // (Not again within the minute.)
+    a.input = None;
+    press(&mut a, 'c');
+    assert!(!rx
+        .try_iter()
+        .any(|t| matches!(t.op, Operation::RecentFolders)));
+    a.apply(Reply {
+        device_id: None,
+        execution_target: None,
+        device: 0,
+        generation: a.generation,
+        preview: None,
+        op: Operation::RecentFolders,
+        result: Ok(serde_json::json!([
+            "/srv/robot-arm",
+            "/work/proj",
+            "/srv/nebula"
+        ])),
+    });
+    let rows: Vec<String> = a.palette_view().into_iter().map(|i| i.label).collect();
+    assert_eq!(
+        rows,
+        [
+            "/work/proj",
+            "/work/running",
+            "/srv/robot-arm",
+            "/srv/nebula"
+        ],
+        "default first, one row per folder"
+    );
+    let text = draw(&a, 120, 40);
+    assert!(text.contains("claude in "), "{text}");
+    if std::env::var_os("CX_PRINT").is_some() {
+        println!("{text}");
+    }
+    // Typing filters; ⏎ starts claude in the match.
+    for c in "robot".chars() {
+        press(&mut a, c);
+    }
+    a.key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+    let started = rx.try_iter().find_map(|t| match t.op {
+        Operation::Create(c) | Operation::CreateYolo(c) => Some(c),
+        _ => None,
+    });
+    let c = started.expect("claude started");
+    assert_eq!(
+        (c.provider.as_str(), c.directory.as_str()),
+        ("claude", "/srv/robot-arm")
+    );
+    assert!(a.input.is_none() && a.launch_where.is_none());
+    // Tab: the folder in Files instead, nothing started.
+    a.creating = false;
+    press(&mut a, 'X');
+    assert_eq!(a.launch_where, Some((0, "codex", true)));
+    a.key(KeyEvent::new(KeyCode::Tab, KeyModifiers::NONE));
+    assert!(a.launch_where.is_none() && a.input.is_none());
+    assert_eq!(a.view, View::Files);
+    assert!(a.browser.as_ref().is_some_and(|b| b.path == "/work/proj"));
+    // A shell starts at once, where the keys start.
+    a.go_home();
+    let _ = rx.try_iter().count();
+    press(&mut a, 'n');
+    assert!(a.launch_where.is_none());
 }

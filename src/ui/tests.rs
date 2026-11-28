@@ -84,14 +84,14 @@ fn device_access_marker_and_toggle_guard_are_clear() {
     assert!(a.edge.is_none());
 }
 
-/// T6: `b` on a device screen opens the edge editor for the viewer's link to
+/// T6: `B` on a device screen opens the edge editor for the viewer's link to
 /// it (edges.json is the one access policy); it never flips the posture.
 #[test]
 fn access_key_opens_the_viewer_link_in_the_edge_editor() {
     let (mut a, _) = queued_app();
     a.policies[1].access = store::AccessMode::Core;
     a.open_device(1);
-    press(&mut a, 'b');
+    press(&mut a, 'B');
     assert_eq!(a.edge.as_ref().map(|e| e.id.as_str()), Some("0-1"));
     assert_eq!(a.policies[1].access, store::AccessMode::Core);
     a.edge = None;
@@ -2400,7 +2400,7 @@ fn watch_key_attaches_highlighted_session_read_only_and_is_contextual() {
     a.focus = Focus::Workspace;
     a.view = View::Work;
     a.work[1].sessions=vec![serde_json::from_value(serde_json::json!({"id":"watch-proof","name":"fixture","directory":"/workspace","provider":"shell","account":"peace","host":"laptop","pid":123,"started":"proof","boot_id":"boot","external":false,"socket":null})).unwrap()];
-    press(&mut a, 'w');
+    press(&mut a, 'W');
     assert!(a.pending_attach.is_none());
     let task = rx.try_recv().unwrap();
     a.apply(Reply {
@@ -2415,11 +2415,11 @@ fn watch_key_attaches_highlighted_session_read_only_and_is_contextual() {
     assert!(matches!(&a.pending_attach,Some((1,s,true)) if s.id=="watch-proof"));
     a.pending_attach = None;
     a.focus = Focus::Workspace;
-    press(&mut a, 'w');
+    press(&mut a, 'W');
     assert!(a.pending_attach.is_none());
     a.focus = Focus::Workspace;
     a.view = View::Files;
-    press(&mut a, 'w');
+    press(&mut a, 'W');
     assert!(a.pending_attach.is_none());
 }
 #[test]
@@ -5209,7 +5209,7 @@ fn session_activity_and_agent_task_details_render_without_relabeling() {
     }
     let id = a.selected_session().unwrap().1.id;
     a.view = View::Work;
-    press(&mut a, 't');
+    press(&mut a, 'S');
     assert!(matches!(a.dialog, Some(Dialog::AgentTasks(..))));
     let capture = capture_app(&a, 120);
     assert!(capture.contains("Ada") && capture.contains("Review device lifecycle"));
@@ -5235,7 +5235,7 @@ fn agent_task_dialog_tracks_refresh_and_closes_when_session_disappears() {
     a.view = View::Work;
     a.device = 1;
     a.selected = 0;
-    press(&mut a, 't');
+    press(&mut a, 'S');
     let mut session = disposable_shell();
     session.agent_tasks.push(crate::model::AgentTask {
         id: "new-child".into(),
@@ -7595,6 +7595,14 @@ fn launched(rx: &mpsc::Receiver<Task>) -> (usize, bool, CreateSession) {
         })
         .expect("nothing launched")
 }
+/// An agent key, then `⏎` on the first row of the folder list it opens (the folder
+/// the key started in before v0.6.1); a shell key starts at once.
+fn launch_key(a: &mut App, c: char) {
+    press(a, c);
+    if a.launch_where.is_some() {
+        a.key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+    }
+}
 fn nothing_launched(rx: &mpsc::Receiver<Task>) -> bool {
     !rx.try_iter()
         .any(|t| matches!(t.op, Operation::Create(_) | Operation::CreateYolo(_)))
@@ -7626,7 +7634,7 @@ fn c_x_n_start_where_cx_was_started_on_this_device_in_the_last_mode() {
         ('C', (true, "claude", true)),
         ('X', (false, "codex", true)),
     ] {
-        press(&mut a, key);
+        launch_key(&mut a, key);
         let (d, yolo, c) = launched(&rx);
         assert_eq!(
             (d, yolo, c.provider.as_str(), c.resume && !c.resume_pick),
@@ -7639,9 +7647,9 @@ fn c_x_n_start_where_cx_was_started_on_this_device_in_the_last_mode() {
         a.creating = false;
     }
     // While one starts, another press says so and starts nothing.
-    press(&mut a, 'c');
+    launch_key(&mut a, 'c');
     let _ = launched(&rx);
-    press(&mut a, 'x');
+    launch_key(&mut a, 'x');
     assert!(nothing_launched(&rx));
     assert!(a.notice.contains("already starting"), "{}", a.notice);
     // Started outside any folder (no `here`): the home.
@@ -7662,7 +7670,7 @@ fn device_keys_start_in_here_locally_and_in_the_last_files_folder_remotely() {
     assert_eq!(launched(&rx).2.directory, "~");
     a.creating = false;
     a.file_locations.insert(1, "/srv/app".into());
-    press(&mut a, 'c');
+    launch_key(&mut a, 'c');
     let (d, _, c) = launched(&rx);
     assert_eq!((d, c.directory.as_str()), (1, "/srv/app"));
     a.creating = false;
@@ -7670,7 +7678,7 @@ fn device_keys_start_in_here_locally_and_in_the_last_files_folder_remotely() {
     a.file_locations.insert(0, "/files".into());
     a.open_device(0);
     let _ = rx.try_iter().count();
-    press(&mut a, 'x');
+    launch_key(&mut a, 'x');
     let (d, _, c) = launched(&rx);
     assert_eq!((d, c.directory.as_str()), (0, "/work/proj"));
     a.creating = false;
@@ -7699,7 +7707,7 @@ fn c_and_x_reuse_each_agents_last_mode_per_device_and_viewers_share_it() {
     let (mut a, rx) = queued_app();
     a.open_device(0);
     let _ = rx.try_iter().count();
-    press(&mut a, 'x');
+    launch_key(&mut a, 'x');
     assert!(!launched(&rx).1, "nothing remembered: default");
     a.creating = false;
     // A YOLO codex through the chooser is remembered for codex on this device only.
@@ -7707,20 +7715,20 @@ fn c_and_x_reuse_each_agents_last_mode_per_device_and_viewers_share_it() {
     let _ = rx.try_iter().count();
     a.creating = false;
     for (key, yolo) in [('x', true), ('X', true), ('c', false), ('C', false)] {
-        press(&mut a, key);
+        launch_key(&mut a, key);
         assert_eq!(launched(&rx).1, yolo, "{key}");
         a.creating = false;
     }
     a.open_device(1);
     let _ = rx.try_iter().count();
-    press(&mut a, 'x');
+    launch_key(&mut a, 'x');
     assert!(!launched(&rx).1, "the other device keeps its own mode");
     a.creating = false;
     // Shared state: another viewer sees it, and its own choice erases nothing.
     let (mut b, rx) = queued_app();
     b.open_device(0);
     let _ = rx.try_iter().count();
-    press(&mut b, 'x');
+    launch_key(&mut b, 'x');
     assert!(launched(&rx).1);
     b.creating = false;
     b.create_permission_session(0, "~".into(), "claude".into(), true, false, false);
@@ -7733,7 +7741,7 @@ fn remembered_yolo_on_an_old_remote_helper_starts_nothing() {
     store::set_launch_yolo("remote", "claude", true).unwrap();
     a.open_device(1);
     let _ = rx.try_iter().count();
-    press(&mut a, 'c');
+    launch_key(&mut a, 'c');
     assert!(nothing_launched(&rx));
     assert!(!a.creating && a.pending_launch.is_none());
     assert!(
@@ -7751,7 +7759,7 @@ fn remembered_yolo_with_stale_capabilities_checks_then_starts() {
     a.providers.insert(1, (caps, transport::now() - 120));
     a.open_device(1);
     let _ = rx.try_iter().count();
-    press(&mut a, 'X');
+    launch_key(&mut a, 'X');
     // Not a false "old helper" claim: it asks the device and says so.
     assert!(rx.try_iter().any(|t| matches!(t.op, Operation::Info)));
     assert!(
@@ -7767,7 +7775,7 @@ fn remembered_yolo_with_stale_capabilities_checks_then_starts() {
     // A helper found old on the check starts nothing and says why; so does no answer.
     a.creating = false;
     a.providers.remove(&1);
-    press(&mut a, 'x');
+    launch_key(&mut a, 'x');
     info_reply(&mut a, 1, serde_json::json!(["codex"]));
     assert!(nothing_launched(&rx));
     assert!(
@@ -7776,7 +7784,7 @@ fn remembered_yolo_with_stale_capabilities_checks_then_starts() {
         a.notice
     );
     a.providers.remove(&1);
-    press(&mut a, 'x');
+    launch_key(&mut a, 'x');
     a.apply(Reply {
         device_id: None,
         execution_target: None,
@@ -7804,8 +7812,8 @@ fn a_waiting_yolo_launch_is_never_dropped_silently_nor_started_after_moving_on()
     a.open_device(1);
     let _ = rx.try_iter().count();
     // A second waiting launch replaces the first and says so.
-    press(&mut a, 'x');
-    press(&mut a, 'X');
+    launch_key(&mut a, 'x');
+    launch_key(&mut a, 'X');
     assert!(
         a.notice.contains("earlier waiting launch is dropped"),
         "{}",
@@ -7822,7 +7830,7 @@ fn a_waiting_yolo_launch_is_never_dropped_silently_nor_started_after_moving_on()
     // them elsewhere; the notice says so.
     a.creating = false;
     stale(&mut a);
-    press(&mut a, 'x');
+    launch_key(&mut a, 'x');
     assert!(a.pending_launch.is_some());
     a.open_device(0);
     info_reply(&mut a, 1, serde_json::json!(["codex", "session-yolo-v1"]));
@@ -7833,7 +7841,7 @@ fn a_waiting_yolo_launch_is_never_dropped_silently_nor_started_after_moving_on()
     // it is dropped with the rest of the device state.
     a.open_device(1);
     stale(&mut a);
-    press(&mut a, 'x');
+    launch_key(&mut a, 'x');
     assert!(a.pending_launch.is_some());
     a.invalidate_device_views();
     assert!(a.pending_launch.is_none());
@@ -8015,7 +8023,7 @@ fn an_agent_key_for_a_missing_agent_starts_nothing_while_info_is_fresh() {
         .insert(0, (vec!["claude".into(), "codex".into()], transport::now()));
     let _ = rx.try_iter().count();
     a.go_home();
-    press(&mut a, 'a');
+    launch_key(&mut a, 'a');
     assert!(
         !rx.try_iter()
             .any(|t| matches!(t.op, Operation::Create(_) | Operation::CreateYolo(_))),
@@ -8025,7 +8033,7 @@ fn an_agent_key_for_a_missing_agent_starts_nothing_while_info_is_fresh() {
     // A device screen's `a` and `O` too.
     a.open_device(0);
     let _ = rx.try_iter().count();
-    press(&mut a, 'O');
+    launch_key(&mut a, 'O');
     assert!(!rx
         .try_iter()
         .any(|t| matches!(t.op, Operation::Create(_) | Operation::CreateYolo(_))));
@@ -8035,7 +8043,7 @@ fn an_agent_key_for_a_missing_agent_starts_nothing_while_info_is_fresh() {
     a.providers
         .insert(0, (vec!["agy".into()], transport::now()));
     a.go_home();
-    press(&mut a, 'a');
+    launch_key(&mut a, 'a');
     assert!(rx
         .try_iter()
         .any(|t| matches!(&t.op, Operation::Create(c) if c.provider == "agy")));
@@ -8045,7 +8053,7 @@ fn an_agent_key_for_a_missing_agent_starts_nothing_while_info_is_fresh() {
         0,
         (vec!["claude".into()], transport::now().saturating_sub(120)),
     );
-    press(&mut a, 'o');
+    launch_key(&mut a, 'o');
     assert!(rx
         .try_iter()
         .any(|t| matches!(&t.op, Operation::Create(c) if c.provider == "opencode")));

@@ -14,8 +14,8 @@ answer (`.invalid` targets: north, east, south, west), on a 190x50 PTY.
   * A device's grid (its letter): six tiles in a 3x2 grid. Right/Left/Down/Up and
     `l h j k` move the `▌` focus one tile the way they point; Up from the top row stays
     put; Down from the bottom row focuses LINKS, and Tab returns to the tiles.
-  * LINKS: Enter opens the selected link's editor; Left/Right select another link
-    (Esc, an arrow, Enter, Esc is no double Esc: the hub stays away).
+  * LINKS: Enter opens the selected device's screen and Esc comes back; Left/Right
+    select another device (Esc, Tab, an arrow, Enter is no double Esc).
   * A tap on a tile focuses it (and attaches nothing).
 On v0.2.1 a device's arrows stepped along the order (Down from a top tile reached the
 next tile in the row), Tab stepped tiles, and LINKS was no zone.
@@ -189,23 +189,26 @@ def main():
         press(b'\t', lambda: '▌SESSIONS' in text(), 'Tab did not return to the tiles')
         press(b'\t', lambda: '▌LINKS' in text(), 'Tab did not focus LINKS')
 
-        # LINKS: Enter edits the selected link; another arrow, another link.
-        def edited():
-            m = re.search(r'\w→(\w)', text())
+        # LINKS: Enter opens the selected device's screen (v0.7.0; its link's editor is
+        # `e` and its letter); Esc comes home. Another arrow, another device.
+        def opened():
+            m = re.search(r'cx ›\s+\S\s+(north|east|south|west)\b', viewer.screen.display[0])
             return m and m.group(1)
-        press(b'\r', edited, 'Enter on LINKS did not open a link')
-        first = edited()
-        press(b'\x1b', lambda: '▌LINKS' in text(), 'Esc did not return to LINKS')
-        targets = {first}
+        def home_again():
+            return re.search(r'cx ›\s+\S\s+home\b', viewer.screen.display[0])
+        press(b'\r', opened, 'Enter on LINKS did not open its device')
+        targets = {opened()}
+        press(b'\x1b', home_again, 'Esc did not come back to this device')
         for key in (LEFT, RIGHT, RIGHT):
+            press(b'\t', lambda: '▌LINKS' in text(), 'Tab did not focus LINKS')
             viewer.write(key)
             quiet()
             assert '▌LINKS' in text(), f'{key!r} left LINKS:\n{text()}'
-            press(b'\r', edited, 'Enter on LINKS did not open a link')
-            targets.add(edited())
-            press(b'\x1b', lambda: '▌LINKS' in text(), 'Esc did not return to LINKS')
-        assert len(targets) >= 2, f'the arrows never selected another link: {targets}'
-        press(b'\t', lambda: '▌SESSIONS' in text(), 'Tab did not return to the tiles')
+            press(b'\r', opened, 'Enter on LINKS did not open its device')
+            targets.add(opened())
+            press(b'\x1b', home_again, 'Esc did not come back to this device')
+        assert len(targets) >= 2, f'the arrows never selected another device: {targets}'
+        settle(lambda: '▌SESSIONS' in text(), 'the tiles lost their focus')
 
         # A tap focuses the tile it lands on, and attaches nothing.
         def attached():

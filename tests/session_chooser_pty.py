@@ -49,9 +49,8 @@ with tempfile.TemporaryDirectory(prefix='cx-session-chooser-') as tmp:
   wait(lambda:'Ctrl+\\' in text() or '[n] Shell' not in text());read(1);send(b'printf "chooser-proof" > chooser-proof\n')
   wait(lambda:(root/'chooser-proof').exists());assert (root/'chooser-proof').read_text()=='chooser-proof'
   send(b'\x1c');read(.5);assert proc.poll() is None and len(sessions())==1
-  # Detach lands on the hub's sessions zone; the network zone's node (this
-  # device) opens its screen, where `w` watches the selected session.
-  send(b'\t\rw')
+  # Detach lands on the session's device, its tile selected, where `W` watches it.
+  send(b'W')
   def readonly():
    p=subprocess.run(['tmux','-S',str(state/'managed.sock'),'list-clients','-F','#{client_readonly}'],capture_output=True)
    return b'1' in p.stdout.splitlines()

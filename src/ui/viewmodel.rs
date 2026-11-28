@@ -55,6 +55,17 @@ impl From<&App> for ViewModel {
             transfers: transfers(app),
             ended: ended(app),
             palette: (app.input == Some(Input::Palette)).then(|| palette(app)),
+            palette_prompt: app
+                .launch_where
+                .filter(|_| app.input == Some(Input::Palette))
+                .map(|(d, agent, resume)| {
+                    let verb = if resume { "resume " } else { "" };
+                    if d == app.local_index() {
+                        format!("{verb}{agent} in")
+                    } else {
+                        format!("{verb}{agent} on {} in", safe_label(&app.devices[d].name))
+                    }
+                }),
         };
         let view = screen(app, &state, &mut caps);
         if view == LabView::Hub && caps.focus == Some(Pane::Graph) {
@@ -667,7 +678,7 @@ fn ended(app: &App) -> Vec<LabSession> {
 
 /// A session's folder with its home as `~`: this host's $HOME, or the account's usual
 /// home on any host (`/home/<account>`, `/Users/<account>`, `/root`).
-fn tilde(dir: &str, account: &str, local: bool) -> String {
+pub(super) fn tilde(dir: &str, account: &str, local: bool) -> String {
     let home = std::env::var("HOME").ok().filter(|_| local);
     let homes = [
         home,

@@ -102,6 +102,80 @@ fn absolute(path: &Path) -> Result<PathBuf> {
         std::env::current_dir()?.join(path)
     })
 }
+/// Folders this device's zoxide database ranks highest (its frecency order), as absolute
+/// UTF-8 paths: never a command, history line or file content. At most 200, from one
+/// bounded `zoxide query --list` (1.5 s, 256 KiB); empty when zoxide is missing or fails.
+pub fn recent_folders() -> Vec<String> {
+    let home = std::env::var_os("HOME").map(PathBuf::from);
+    // A helper reached over SSH has a minimal PATH: also the usual install places.
+    let mut dirs: Vec<PathBuf> = std::env::var_os("PATH")
+        .map(|p| std::env::split_paths(&p).collect())
+        .unwrap_or_default();
+    if let Some(home) = &home {
+        dirs.extend([home.join(".local/bin"), home.join(".cargo/bin")]);
+    }
+    dirs.extend(["/usr/local/bin", "/usr/bin", "/opt/homebrew/bin"].map(PathBuf::from));
+    let Some(zoxide) = dirs
+        .into_iter()
+        .map(|d| d.join("zoxide"))
+        .find(|p| p.is_file())
+    else {
+        return Vec::new();
+    };
+    let Ok(mut child) = std::process::Command::new(zoxide)
+        .args(["query", "--list"])
+        .stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::null())
+        .spawn()
+    else {
+        return Vec::new();
+    };
+    // Read on a thread (bounded), wait here (bounded): a hung zoxide is killed.
+    let mut stdout = child.stdout.take();
+    let reader = std::thread::spawn(move || {
+        let mut out = Vec::new();
+        if let Some(s) = stdout.as_mut() {
+            let _ = s.take(256 * 1024).read_to_end(&mut out);
+        }
+        out
+    });
+    let deadline = std::time::Instant::now() + std::time::Duration::from_millis(1500);
+    let ok = loop {
+        match child.try_wait() {
+            Ok(Some(status)) => break status.success(),
+            Ok(None) if std::time::Instant::now() < deadline => {
+                std::thread::sleep(std::time::Duration::from_millis(10))
+            }
+            _ => {
+                let _ = child.kill();
+                let _ = child.wait();
+                break false;
+            }
+        }
+    };
+    let out = reader.join().unwrap_or_default();
+    if ok {
+        recent_folder_lines(&out)
+    } else {
+        Vec::new()
+    }
+}
+
+fn recent_folder_lines(out: &[u8]) -> Vec<String> {
+    String::from_utf8_lossy(out)
+        .lines()
+        .filter(|l| {
+            l.len() <= 4096
+                && Path::new(l).is_absolute()
+                && !l.contains('\u{fffd}')
+                && !l.chars().any(char::is_control)
+        })
+        .take(200)
+        .map(str::to_owned)
+        .collect()
+}
+
 pub fn handle(op: &Operation) -> Result<Value> {
     match op {
         Operation::List { path } => list(&decode_path(path)?),
@@ -1987,6 +2061,19 @@ fn valid_symlink_request(conflict: &str, key: &str) -> Result<()> {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn recent_folders_keep_only_bounded_absolute_clean_paths() {
+        let out = b"/home/u/proj\nrelative/dir\n/home/u/\x1b[31mred\n/home/u/two words\n\n";
+        assert_eq!(
+            super::recent_folder_lines(out),
+            vec!["/home/u/proj".to_string(), "/home/u/two words".to_string()]
+        );
+        let many: Vec<u8> = (0..300)
+            .flat_map(|i| format!("/d/{i}\n").into_bytes())
+            .collect();
+        assert_eq!(super::recent_folder_lines(&many).len(), 200);
+        assert!(super::recent_folder_lines(&[0xff, b'/', b'x']).is_empty());
+    }
     use super::*;
     use tempfile::tempdir;
     /// transport::MAX_MESSAGE; files.rs is also compiled into integration tests without transport.

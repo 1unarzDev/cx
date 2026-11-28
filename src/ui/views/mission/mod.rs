@@ -238,40 +238,20 @@ pub(super) enum Size {
     L,
 }
 
-/// Session keys inside a device, in the order they are given out: the home row (`f`
-/// stays "files", `h j k l` motion), then the top and bottom rows' letters no device
-/// screen binds (`c x a o n` new, `w e r t p b` verbs), then the digits. A session keeps
-/// its key until it ends; past these 19 a device's sessions are a `/` away.
-/// Agents' keys never are (`model::AGENTS`).
-pub const SLOTS: [char; SLOT_COUNT] = {
-    let mut out = ['\0'; SLOT_COUNT];
-    let (mut i, mut n) = (0, 0);
-    while i < SLOT_POOL.len() {
-        if !crate::model::is_agent_key(SLOT_POOL[i]) {
-            out[n] = SLOT_POOL[i];
-            n += 1;
-        }
-        i += 1;
-    }
-    out
-};
-const SLOT_POOL: [char; 21] = [
-    'a', 's', 'd', 'g', 'q', 'u', 'i', 'o', 'y', 'z', 'v', 'm', '1', '2', '3', '4', '5', '6', '7',
-    '8', '9',
-];
-const SLOT_COUNT: usize = {
-    let (mut i, mut n) = (0, 0);
-    while i < SLOT_POOL.len() {
-        if !crate::model::is_agent_key(SLOT_POOL[i]) {
-            n += 1;
-        }
-        i += 1;
-    }
-    n
-};
-/// The home-row slots alone (`s d g`; `a` is Antigravity's): the keys screen's cards,
-/// and the letters device names give way to (`hotkeys`).
-pub const HOME: [char; 3] = [SLOTS[0], SLOTS[1], SLOTS[2]];
+/// Session keys, in the order they are given out: the letters a device screen leaves
+/// once its action keys (`hotkeys::never`) and every device's letter are taken, home
+/// row first, then the top and bottom rows, then the digits. A session keeps its key
+/// until it ends; past the pool a device's sessions are a `/` away.
+pub fn slots(device_letters: impl IntoIterator<Item = char>) -> Vec<char> {
+    let devices: Vec<char> = device_letters.into_iter().collect();
+    SLOT_ORDER
+        .chars()
+        .filter(|c| !crate::ui::hotkeys::never(*c) && !devices.contains(c))
+        .collect()
+}
+const SLOT_ORDER: &str = "sdgqwrtyuipzvbm123456789";
+/// The keys screen's cards (no device letters there): the home row.
+pub const HOME: [char; 3] = ['s', 'd', 'g'];
 
 /// The agents `d` can start, by its helper's last Info (before it has answered, claude
 /// and codex, as before agy and opencode joined: never a promise a device may not keep).
@@ -810,6 +790,10 @@ impl<'a> Cx<'a> {
     }
     /// Hub order: what needs you first, then live work, then by recency (a session past
     /// the key pool last: the tiles shown are the ones with a key).
+    /// Session keys on a device screen here (`slots`, after the devices' letters).
+    pub fn slots(&self) -> Vec<char> {
+        slots(self.s.devices.iter().map(|d| d.hotkey))
+    }
     pub fn by_attention(&self) -> Vec<&'a LabSession> {
         let mut v: Vec<&LabSession> = self.s.sessions.iter().collect();
         let rank = |x: &LabSession| match x.state {

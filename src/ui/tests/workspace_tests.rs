@@ -441,9 +441,9 @@ fn identity_checked_sessions_attach_on_enter_without_a_round_trip() {
     assert!(matches!(a.pending_attach, Some((0, _, false))));
     assert!(a.attach_check.is_none() && !a.pane_focused());
     assert!(rx.try_iter().all(|t| !matches!(t.op, Operation::Sessions)));
-    // `w` watches read-only through the same direct path.
+    // `W` watches read-only through the same direct path.
     a.pending_attach = None;
-    press(&mut a, 'w');
+    press(&mut a, 'W');
     assert!(matches!(a.pending_attach, Some((0, _, true))));
     // Legacy rows without terminal identity keep the verification round trip.
     let (mut b, rx) = queued_app();

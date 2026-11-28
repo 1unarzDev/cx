@@ -148,6 +148,9 @@ impl App {
             KeyCode::PageUp if mode == Input::Palette => {
                 self.palette_selected = self.palette_selected.saturating_sub(8)
             }
+            KeyCode::Tab if mode == Input::Palette && self.launch_where.is_some() => {
+                self.where_browse()
+            }
             KeyCode::Tab | KeyCode::BackTab if mode == Input::Palette => self.palette_next_section(
                 key.code == KeyCode::BackTab || key.modifiers.contains(KeyModifiers::SHIFT),
             ),

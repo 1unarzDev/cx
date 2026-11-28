@@ -354,6 +354,9 @@ pub struct LabState {
     /// Palette rows from the real app (already filtered and ranked); None in fixtures,
     /// where the palette lists the fixture's devices, sessions and actions itself.
     pub palette: Option<Vec<PaletteRow>>,
+    /// The palette's prompt when it asks where an agent starts (`claude in`); `/`
+    /// otherwise.
+    pub palette_prompt: Option<String>,
 }
 
 /// One palette row the app supplies: its group, label, quiet detail, the keys that
@@ -456,7 +459,7 @@ mod tests {
             // (Past the 20 letters a device has none, as in the real hub.)
             let mut keys: Vec<char> = st.devices.iter().map(|d| d.hotkey).collect();
             assert!(
-                keys.iter().all(|c| !"ecxaon".contains(*c)),
+                keys.iter().all(|c| !crate::ui::hotkeys::never(*c)),
                 "{}",
                 st.fixture
             );
@@ -465,7 +468,7 @@ mod tests {
             keys.sort();
             keys.dedup();
             assert_eq!(keys.len(), lettered, "hotkeys unique in {}", st.fixture);
-            assert_eq!(lettered, st.devices.len().min(20), "{}", st.fixture);
+            assert_eq!(lettered, st.devices.len().min(15), "{}", st.fixture);
             assert!(st.preview().is_some());
         }
     }

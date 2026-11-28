@@ -2,6 +2,15 @@
 
 Each stable release describes user-visible changes here before tagging. GitHub release descriptions are generated from the matching version section; missing notes block publication. Unreleased work is not included in published descriptions.
 
+## v0.7.0
+
+Every device a letter away from any device, agents that ask where, and a device map that goes somewhere.
+
+### Features
+- **Device letters work on every device's screen.** Another device's letter opens its screen straight from the one you are on (`t` for tranquility from innovation), as from the picker; the map under a device's sessions is a way there too (Tab, then Enter on a node, or a tap). Each device takes the first free letter of its name: a device screen's own keys come first (`c x a o n`, `f` files, `e` links, `h j k l`), then devices, then sessions get the letters left, home row first, then the digits. With innovation, tranquility, blastoise-odroid, creation and blastoise-jetson that is `i t b r s`; sessions get `d g q w y u p z v m`, `1`–`9`.
+- **The rarer device-screen verbs moved to Shift** to free those letters: `R` retry, `W` watch, `P` pin, `S` subagents and tasks, `B` access (`E` and `D` as before).
+- **Agents ask where first.** `c x a o` (and `C X A O` to resume) open a folder list for that device (`claude in ▏`): where its keys used to start on top (the folder cx was started in, on this device), then its running sessions' folders, cx's recent ones and the device's own zoxide folders. Type to filter, Enter starts the agent there, Tab browses the folder in Files instead; `c` Enter is the old one-step launch. `n` still starts a shell at once. A device's zoxide folders need this cx's helper there (`recent-folders-v1`); older helpers list cx's own folders.
+
 ## v0.6.0
 
 cx opens on the device you are on, and terminals outside cx stop crowding it.
